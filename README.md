@@ -1,28 +1,40 @@
 # reflector v2
 
-Fork of [elkokc/reflector](https://github.com/elkokc/reflector) (Burp Suite passive scanner that finds reflected parameters and tests which special characters survive). Changes in v2:
+**Why v2? Because it needs no paid Burp Suite.** The original [reflector](https://github.com/elkokc/reflector) only works as a Burp *Scanner* check, and the Scanner exists only in Burp Professional. On Burp Community it loads, shows a tab, and then never finds anything. **v2 reads your Proxy traffic itself, so it works on the free Community edition** (and still uses the Scanner on Pro).
 
-* **Scope only is on by default.** Aggressive mode sends extra requests, so it no longer touches out-of-scope hosts unless you turn the option off.
-* **Thread-safe severity.** The "possible"/"vulnerable" verdict was a shared field and could cross between concurrent scans.
-* **Encoded reflections are found.** Besides the decoded value it now looks for the raw, HTML-escaped (`&lt;`, `&#39;`, `&#x27;`) and JSON/JS-escaped (`\"`, `\u003c`) forms.
-* **JSON numbers/booleans** are tested (they used to be skipped); probes keep the JSON valid.
-* **Values of 2+ characters** are tested (was 3+).
-* **Request headers** `Referer`, `User-Agent`, `Origin`, `X-Forwarded-Host`, `X-Forwarded-For` are tested.
-* **Default content types** include JSON, JS and XML; responses without a Content-Type are tested too.
-* **Probe cache.** The same endpoint + parameter is probed once, not on every page view.
-* Probe fixes: `Content-Length` recomputed from the real body, longer encoded payloads matched, null responses and failed probes no longer break the scan, merged highlight markers are correct.
+## How it works
 
-**Beta: works on Burp Community too.** On Community there is no Scanner, so v2 beta listens to Proxy traffic itself ("Proxy listener" option, on by default on Community, off on Pro where the Scanner check is used). Reflected items get an orange highlight and a comment in Proxy history, and every finding is listed in the **Results** tab (host, URL, parameter, where it is reflected, severity, allowed characters / context) with a request/response viewer. Extra probe requests run in the background and never delay the browser.
+1. **You browse through Burp as usual.** For every response that passes through the Proxy, v2 takes each request parameter (URL, body, cookie, JSON, XML, multipart, plus `Referer`, `User-Agent`, `Origin`, `X-Forwarded-*`) and looks for its value in the response.
+2. **It also finds encoded reflections:** raw, HTML-escaped (`&lt;`, `&#39;`, `&#x27;`) and JSON/JS-escaped (`\"`, `\u003c`) forms count too.
+3. **Reflected? The history row turns orange** and gets a comment like `Reflector v2: language`, so you see it right in Proxy history.
+4. **Aggressive mode** then re-sends the request in the background with `p@y<"'p@y` in the reflected parameter and reads back which of `<` `"` `'` survive unescaped. **Probes never block your browser**, and the same endpoint+parameter is probed only once.
+5. **Check context** mode goes further and works out *where* it lands (HTML, attribute, JS string) and which character breaks out of it.
+6. **Everything is listed in the Results tab:** host, URL, parameter, where it reflects, severity (High = dangerous characters survive, Medium = reflected but escaped), allowed characters / context, with a request/response viewer.
 
-Build and test (needs a JDK, no Burp required for the tests):
+On Burp Pro the Scanner check also raises normal "XSS (possible/vulnerable)" issues. Pick the mode with the **Proxy listener** checkbox (on by default on Community, off on Pro).
 
-    ./build.sh test     # runs the offline suite against a fake Burp API + simulated app
-    ./build.sh          # produces build/reflectorv2.jar, load it in Burp via Extender > Add (Java)
+## Install
 
-Original README below.
+Download `reflectorv2-beta.jar` (or build it), then Burp → Extender → Extensions → Add → Type: Java → select the jar. **Scope only is on by default**: add your target to Target → Scope or untick the option, otherwise nothing is analysed. Aggressive mode sends extra requests, so only use it on targets you are allowed to test.
+
+## What changed from the original
+
+* No paid Burp needed (Proxy listener + Results tab).
+* Scope only on by default; thread-safe severity (concurrent scans could swap "possible"/"vulnerable").
+* Encoded reflections, JSON numbers/booleans and 2-character values are tested; header reflections added.
+* JSON/JS/XML responses and responses without a Content-Type are tested too.
+* Probe cache, correct `Content-Length` on probes, no crash on null responses or failed probes.
+
+## Build and test
+
+Needs a JDK; the tests need no Burp.
+
+    ./build.sh test     # offline suite against a fake Burp API + simulated vulnerable app
+    ./build.sh          # build/reflectorv2.jar
+
+Based on [elkokc/reflector](https://github.com/elkokc/reflector); original README below.
 
 ---
-
 # reflector [<img src="https://github.com/elkokc/reflector/blob/master/screenshot/release-v2.0-blue.svg">](https://github.com/elkokc/reflector/releases/tag/2.1)
 
 
