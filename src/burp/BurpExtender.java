@@ -13,7 +13,7 @@ import static burp.Constants.*;
 
 public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
 {
-    public static final String PLUGIN_NAME = "Reflector";
+    public static final String PLUGIN_NAME = "Reflector v2";
     private IBurpExtenderCallbacks callbacks;
     private IExtensionHelpers helpers;
     private static final String DESCRIPTION_DETAILS = "Reflected parameters in ";
@@ -36,10 +36,8 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
     private JCheckBox aggressiveMode;
     private JCheckBox checkContext;
     private Settings settings;
-    private String issueName = XSS_POSSIBLE;
-
-    private CheckReflection checkReflection;
-
+    
+    
     @Override
     public void registerExtenderCallbacks(final IBurpExtenderCallbacks callbacks)
     {
@@ -265,7 +263,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
     // implement IScannerCheck
     //
 
-    private String buildIssueForReflection( Map param)
+    private String buildIssueForReflection( Map param, boolean[] vulnerable)
     {
         String reflectedIn = "";
         reflectedIn+="<li>";
@@ -276,7 +274,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
             reflectedIn += "and allow the following characters: "+ String.valueOf(param.get(VULNERABLE));
             if (settings.getCheckContext() && !String.valueOf(param.get(VULNERABLE)).contains(CONTEXT_VULN_FLAG))
                 return reflectedIn+ "</li>" ;
-            issueName = XSS_VULNERABLE;
+            vulnerable[0] = true;
         }
         return reflectedIn+ "</li>" ;
     }
@@ -285,17 +283,20 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
     public List<IScanIssue> doPassiveScan(IHttpRequestResponse baseRequestResponse) throws RuntimeException {
         if ( this.settings.getScopeOnly() && !callbacks.isInScope(helpers.analyzeRequest(baseRequestResponse).getUrl()) )
             return null;
+        if (baseRequestResponse.getResponse() == null || baseRequestResponse.getRequest() == null)
+            return null;
         // check content type
         String contentType = "";
         for (String header: helpers.analyzeResponse(baseRequestResponse.getResponse()).getHeaders()) {
-            if (header.toLowerCase().contains("content-type: ")) {
-                contentType = header.toLowerCase().split(": ", 2)[1];
+            if (header.toLowerCase().startsWith("content-type:")) {
+                contentType = header.toLowerCase().split(":", 2)[1].trim();
                 break;
             }
         }
         if (settings.getEnabledContentTypes() == null)
             return null;
-        boolean isContentTypeAllowed = false;
+        // browsers sniff a response without a Content-Type, so test it too
+        boolean isContentTypeAllowed = contentType.isEmpty();
         for (String allowedContentType: settings.getEnabledContentTypes()) {
             if (contentType.contains(allowedContentType)) {
                 contentType = allowedContentType;
@@ -303,13 +304,12 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
                 break;
             }
         }
-        issueName = XSS_POSSIBLE;
+        boolean[] vulnerable = {false};
         // start analyze request
         if ( isContentTypeAllowed )
         {
             //Initialize check reflections
-            this.checkReflection = new CheckReflection(settings, helpers, baseRequestResponse, callbacks);
-            List<Map> reflections = this.checkReflection.checkResponse();
+            List<Map> reflections = new CheckReflection(settings, helpers, baseRequestResponse, callbacks).checkResponse();
             if (!reflections.isEmpty())
             {
                 // report the issue
@@ -321,16 +321,16 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
                 for(Map param: reflections) {
 
                     if(param.get(REFLECTED_IN).equals(BODY)){
-                        reflectedInBody+=buildIssueForReflection(param);
+                        reflectedInBody+=buildIssueForReflection(param, vulnerable);
                     }
 
                     if(param.get(REFLECTED_IN).equals(HEADERS)){
-                        reflectedInHeader+=buildIssueForReflection(param);
+                        reflectedInHeader+=buildIssueForReflection(param, vulnerable);
                     }
 
 
                     if(param.get(REFLECTED_IN).equals(BOTH)){
-                        reflectedInAll+=buildIssueForReflection(param);
+                        reflectedInAll+=buildIssueForReflection(param, vulnerable);
                     }
 
 
@@ -359,17 +359,18 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
                 for (Pair pair : pairs)
                 {
                     if (tmpPair == null)
-                        tmpPair = pair.getPair();
+                        tmpPair = pair.getPair().clone();
                     else if (tmpPair[1] > pair.getPair()[0])
-                        tmpPair[1] = pair.getPair()[1];
+                        tmpPair[1] = Math.max(tmpPair[1], pair.getPair()[1]);
                     else {
                         matches.add(tmpPair);
-                        tmpPair = pair.getPair();
+                        tmpPair = pair.getPair().clone();
                     }
                 }
                 if (tmpPair != null) {
                     matches.add(tmpPair);
                 }
+                String issueName = vulnerable[0] ? XSS_VULNERABLE : XSS_POSSIBLE;
                 List<IScanIssue> issues = new ArrayList<>();
                 issues.add(new CustomScanIssue(
                         baseRequestResponse.getHttpService(),

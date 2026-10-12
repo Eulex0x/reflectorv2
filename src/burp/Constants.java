@@ -9,6 +9,7 @@ public class Constants {
     public static final String MATCHES = "Matches";
     public static final String REFLECTED_IN = "ReflectedIn";
     public static final String VULNERABLE = "Vulnerable";
+    public static final String QUOTED = "Quoted";
     public static final String CONTEXT_VULN_FLAG = " <b>VULNERABLE</b>";
     public static final String SCOPE_ONLY = "Scope only";
     public static final String CHECK_CONTEXT = "Check context";

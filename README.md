@@ -1,3 +1,26 @@
+# reflector v2
+
+Fork of [elkokc/reflector](https://github.com/elkokc/reflector) (Burp Suite passive scanner that finds reflected parameters and tests which special characters survive). Changes in v2:
+
+* **Scope only is on by default.** Aggressive mode sends extra requests, so it no longer touches out-of-scope hosts unless you turn the option off.
+* **Thread-safe severity.** The "possible"/"vulnerable" verdict was a shared field and could cross between concurrent scans.
+* **Encoded reflections are found.** Besides the decoded value it now looks for the raw, HTML-escaped (`&lt;`, `&#39;`, `&#x27;`) and JSON/JS-escaped (`\"`, `\u003c`) forms.
+* **JSON numbers/booleans** are tested (they used to be skipped); probes keep the JSON valid.
+* **Values of 2+ characters** are tested (was 3+).
+* **Request headers** `Referer`, `User-Agent`, `Origin`, `X-Forwarded-Host`, `X-Forwarded-For` are tested.
+* **Default content types** include JSON, JS and XML; responses without a Content-Type are tested too.
+* **Probe cache.** The same endpoint + parameter is probed once, not on every page view.
+* Probe fixes: `Content-Length` recomputed from the real body, longer encoded payloads matched, null responses and failed probes no longer break the scan, merged highlight markers are correct.
+
+Build and test (needs a JDK, no Burp required for the tests):
+
+    ./build.sh test     # runs the offline suite against a fake Burp API + simulated app
+    ./build.sh          # produces build/reflectorv2.jar, load it in Burp via Extender > Add (Java)
+
+Original README below.
+
+---
+
 # reflector [<img src="https://github.com/elkokc/reflector/blob/master/screenshot/release-v2.0-blue.svg">](https://github.com/elkokc/reflector/releases/tag/2.1)
 
 

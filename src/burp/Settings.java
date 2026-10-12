@@ -25,8 +25,9 @@ class Settings
         scopeOnly = callbacks.loadExtensionSetting(SCOPE_ONLY);
         checkContext = callbacks.loadExtensionSetting(CHECK_CONTEXT);
         aggressiveMode = callbacks.loadExtensionSetting(AGGRESSIVE_MODE);
+        // aggressive mode sends extra requests, so stay inside the Burp scope unless told otherwise
         if(scopeOnly == null)
-            scopeOnly = FALSE_CONST;
+            scopeOnly = TRUE_CONST;
         if(aggressiveMode == null)
             aggressiveMode = TRUE_CONST;
         if(checkContext == null)
@@ -95,7 +96,9 @@ class Settings
         String preparedArray = this.callbacks.loadExtensionSetting(CONTENT_TYPES);
         if(preparedArray == null){
             contentTypes = new ArrayList<Object[]>();
-            contentTypes.add(new Object[]{Boolean.TRUE, "text/html"});
+            for (String type : new String[]{"text/html", "application/json", "application/javascript", "text/javascript", "application/xml", "text/xml"}) {
+                contentTypes.add(new Object[]{Boolean.TRUE, type});
+            }
         }
         else{
             contentTypes = this.extractArray(preparedArray);
