@@ -15,7 +15,7 @@ On Burp Pro the Scanner check also raises normal "XSS (possible/vulnerable)" iss
 
 ## Install
 
-Download `reflectorv2-beta.jar` (or build it), then Burp → Extender → Extensions → Add → Type: Java → select the jar. **Scope only is on by default**: add your target to Target → Scope or untick the option, otherwise nothing is analysed. Aggressive mode sends extra requests, so only use it on targets you are allowed to test.
+Build the jar with `./build.sh` (or take it from the Releases page if one is published), then Burp → Extender → Extensions → Add → Type: Java → select the jar. **Scope only is on by default**: add your target to Target → Scope or untick the option, otherwise nothing is analysed. Aggressive mode sends extra requests, so only use it on targets you are allowed to test.
 
 ## What changed from the original
 
