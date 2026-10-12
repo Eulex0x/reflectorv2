@@ -18,7 +18,10 @@ public class ReflectorTest {
     static final AtomicInteger probes = new AtomicInteger();
     static final List<String> errors = new CopyOnWriteArrayList<>();
     static final List<String> probeRequests = new CopyOnWriteArrayList<>();
+    static final List<String> registered = new CopyOnWriteArrayList<>();
     static boolean inScope = true;
+    static volatile String[] burpVersion = null;
+    static volatile long probeDelayMs = 0;
 
     static void check(String name, boolean ok) {
         System.out.println((ok ? "PASS  " : "FAIL  ") + name);
@@ -140,11 +143,20 @@ public class ReflectorTest {
                 case "loadExtensionSetting": return settingsStore.get(a[0]);
                 case "saveExtensionSetting": settingsStore.put((String) a[0], (String) a[1]); return null;
                 case "isInScope": return inScope;
+                case "getBurpVersion": return burpVersion;
+                case "registerScannerCheck": case "registerHttpListener": case "addSuiteTab":
+                case "registerExtensionStateListener": case "setExtensionName": case "customizeUiComponent":
+                    registered.add(method.getName()); return null;
+                case "createMessageEditor": {
+                    final javax.swing.JPanel comp = new javax.swing.JPanel();
+                    return stub(IMessageEditor.class, new HashMap<String, Object>() {{ put("getComponent", comp); }});
+                }
                 case "printError": errors.add(String.valueOf(a[0])); return null;
                 case "applyMarkers": return stub(IHttpRequestResponseWithMarkers.class, new HashMap<>());
                 case "getHelpers": return helpers();
                 case "makeHttpRequest": {
                     probes.incrementAndGet();
+                    if (probeDelayMs > 0) Thread.sleep(probeDelayMs);
                     byte[] req = (byte[]) a[1];
                     probeRequests.add(str(req));
                     return rr(req, app(str(req)));
@@ -226,7 +238,138 @@ public class ReflectorTest {
 
     static IScanIssue one(List<IScanIssue> l) { return l == null || l.isEmpty() ? null : l.get(0); }
 
+    static IHttpRequestResponse recordingRR(byte[] req, String[] commentOut, String[] highlightOut) {
+        return (IHttpRequestResponse) Proxy.newProxyInstance(IHttpRequestResponse.class.getClassLoader(),
+                new Class[]{IHttpRequestResponse.class}, (p, m, a) -> {
+            switch (m.getName()) {
+                case "getRequest": return req;
+                case "getResponse": return app(str(req));
+                case "getHttpService": return service();
+                case "getComment": return commentOut[0];
+                case "setComment": commentOut[0] = (String) a[0]; return null;
+                case "setHighlight": highlightOut[0] = (String) a[0]; return null;
+            }
+            return null;
+        });
+    }
+
+    static void waitIdle(BurpExtender e) throws Exception {
+        for (int n = 0; n < 100 && e.pendingProbes() > 0; n++) Thread.sleep(50);
+    }
+
+    static void listenerTests() throws Exception {
+        System.out.println("--- proxy listener / Community mode ---");
+        burpVersion = new String[]{"Burp Suite Community Edition", "2024", "1"};
+        check("Community: proxy listener is on by default", new Settings(callbacks(new HashMap<>())).getProxyListener());
+        burpVersion = new String[]{"Burp Suite Professional", "2024", "1"};
+        check("Professional: proxy listener is off by default", !new Settings(callbacks(new HashMap<>())).getProxyListener());
+        burpVersion = new String[]{"Burp Suite Community Edition", "2024", "1"};
+
+        Map<String, String> store = new HashMap<>();
+        BurpExtender e = extender(store);
+        ResultsPanel results = new ResultsPanel(callbacks(store));
+        set(e, "results", results);
+        String[] comment = {null}, highlight = {null};
+
+        check("Scanner path does nothing while the listener is on", scan(e, get("/raw?q=hello", "")) == null);
+
+        // proxy response -> highlight + comment immediately, row added
+        probeDelayMs = 300;
+        long t0 = System.currentTimeMillis();
+        e.processHttpMessage(IBurpExtenderCallbacks.TOOL_PROXY, false, recordingRR(get("/raw?q=hello", ""), comment, highlight));
+        long took = System.currentTimeMillis() - t0;
+        check("listener returns before the (slow) probes finish, proxy is not blocked", took < 200 && e.pendingProbes() > 0);
+        check("proxy history item highlighted orange", "orange".equals(highlight[0]));
+        check("proxy history comment names the parameter", comment[0] != null && comment[0].contains("Reflector v2") && comment[0].contains("q"));
+        check("row shows up as pending while probing", results.size() == 1 && results.snapshot().get(0).pending);
+        waitIdle(e);
+        probeDelayMs = 0;
+        Finding f = results.snapshot().get(0);
+        check("probe result filled in: High + allowed chars", !f.pending && f.vulnerable && f.severity().equals("High") && f.allowed.contains("<"));
+        check("row has host, URL, parameter, location", f.host.equals("app.test") && f.url.contains("/raw?q=hello") && f.parameter.equals("q") && f.reflectedIn.equals("BODY"));
+        check("row keeps the request and response for the viewer", f.message.getRequest() != null && f.message.getResponse() != null);
+
+        // same page again: one row, not two, and no extra probes
+        int before = probes.get();
+        e.processHttpMessage(4, false, recordingRR(get("/raw?q=hello", ""), new String[1], new String[1]));
+        waitIdle(e);
+        check("revisiting the page keeps a single row and sends no new probes", results.size() == 1 && probes.get() == before);
+
+        // escaped reflection => Medium
+        e.processHttpMessage(4, false, recordingRR(get("/escaped?q=hello", ""), new String[1], new String[1]));
+        waitIdle(e);
+        Finding esc = null;
+        for (Finding x : results.snapshot()) if (x.url.contains("/escaped")) esc = x;
+        check("escaped reflection is listed as Medium", esc != null && !esc.vulnerable && esc.severity().equals("Medium"));
+
+        // things that must be ignored
+        int rows = results.size();
+        e.processHttpMessage(IBurpExtenderCallbacks.TOOL_PROXY, true, recordingRR(get("/raw?q=zzz1", ""), new String[1], new String[1]));
+        e.processHttpMessage(64, false, recordingRR(get("/raw?q=zzz2", ""), new String[1], new String[1]));
+        inScope = false;
+        e.processHttpMessage(4, false, recordingRR(get("/raw?q=zzz3", ""), new String[1], new String[1]));
+        inScope = true;
+        e.processHttpMessage(4, false, recordingRR(get("/nothing?q=zzz4", ""), new String[1], new String[1]));
+        check("requests, non-proxy tools, out-of-scope and non-reflecting responses are ignored", results.size() == rows);
+
+        // aggressive off => no probes, row is final at once
+        store.put("Aggressive mode", "false");
+        BurpExtender e2 = extender(store);
+        ResultsPanel r2 = new ResultsPanel(callbacks(store));
+        set(e2, "results", r2);
+        before = probes.get();
+        e2.processHttpMessage(4, false, recordingRR(get("/raw?q=hello", ""), new String[1], new String[1]));
+        check("aggressive off: no probes, finished row at once", probes.get() == before && r2.size() == 1 && !r2.snapshot().get(0).pending && e2.pendingProbes() == 0);
+        store.remove("Aggressive mode");
+
+        r2.clear();
+        check("Clear empties the table", r2.size() == 0);
+
+        // Pro with the Scanner: issues still created and rows still listed
+        burpVersion = new String[]{"Burp Suite Professional", "2024", "1"};
+        Map<String, String> proStore = new HashMap<>();
+        BurpExtender pro = extender(proStore);
+        ResultsPanel rp = new ResultsPanel(callbacks(proStore));
+        set(pro, "results", rp);
+        IScanIssue i = one(scan(pro, get("/raw?q=prohello", "")));
+        check("Pro: Scanner issue still raised", i != null && i.getIssueName().equals("XSS (vulnerable)"));
+        check("Pro: the finding is also listed in the Results tab", rp.size() == 1 && rp.snapshot().get(0).vulnerable);
+        pro.processHttpMessage(4, false, recordingRR(get("/raw?q=prohello2", ""), new String[1], new String[1]));
+        check("Pro: listener stays off unless enabled", rp.size() == 1);
+        burpVersion = null;
+    }
+
+    static void startupTests() throws Exception {
+        System.out.println("--- extension startup (real UI wiring, headless) ---");
+        for (boolean community : new boolean[]{true, false}) {
+            burpVersion = new String[]{community ? "Burp Suite Community Edition" : "Burp Suite Professional", "2024", "1"};
+            registered.clear();
+            Map<String, String> store = new HashMap<>();
+            BurpExtender e = new BurpExtender();
+            e.registerExtenderCallbacks(callbacks(store));
+            javax.swing.SwingUtilities.invokeAndWait(() -> {});
+            for (int n = 0; n < 50 && !registered.contains("registerHttpListener"); n++) Thread.sleep(50);
+            String label = community ? "Community" : "Pro";
+            check(label + ": tab added and listener registered", registered.contains("addSuiteTab") && registered.contains("registerHttpListener"));
+            check(label + ": Scanner check " + (community ? "NOT " : "") + "registered", registered.contains("registerScannerCheck") == !community);
+            Object ui = e.getUiComponent();
+            check(label + ": UI is a tabbed pane with Results + Settings", ui instanceof javax.swing.JTabbedPane
+                    && ((javax.swing.JTabbedPane) ui).getTabCount() == 2
+                    && ((javax.swing.JTabbedPane) ui).getTitleAt(0).equals("Results"));
+            // the Proxy listener checkbox must write the setting
+            Field cb = BurpExtender.class.getDeclaredField("proxyListener");
+            cb.setAccessible(true);
+            javax.swing.JCheckBox box = (javax.swing.JCheckBox) cb.get(e);
+            check(label + ": checkbox reflects default", box.isSelected() == community);
+            box.setSelected(!community);
+            check(label + ": toggling checkbox saves the setting", store.get("Proxy listener").equals(String.valueOf(!community)));
+            e.extensionUnloaded();
+        }
+        burpVersion = null;
+    }
+
     public static void main(String[] args) throws Exception {
+        System.setProperty("java.awt.headless", "true");
         Map<String, String> store = new HashMap<>();
         BurpExtender e = extender(store);
 
@@ -329,6 +472,9 @@ public class ReflectorTest {
         check("400 concurrent scans: severity never crosses between threads", allOk);
         check("no probe errors logged", errors.isEmpty());
         if (!errors.isEmpty()) System.out.println(errors);
+
+        listenerTests();
+        startupTests();
 
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);

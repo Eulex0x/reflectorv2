@@ -12,6 +12,8 @@ Fork of [elkokc/reflector](https://github.com/elkokc/reflector) (Burp Suite pass
 * **Probe cache.** The same endpoint + parameter is probed once, not on every page view.
 * Probe fixes: `Content-Length` recomputed from the real body, longer encoded payloads matched, null responses and failed probes no longer break the scan, merged highlight markers are correct.
 
+**Beta: works on Burp Community too.** On Community there is no Scanner, so v2 beta listens to Proxy traffic itself ("Proxy listener" option, on by default on Community, off on Pro where the Scanner check is used). Reflected items get an orange highlight and a comment in Proxy history, and every finding is listed in the **Results** tab (host, URL, parameter, where it is reflected, severity, allowed characters / context) with a request/response viewer. Extra probe requests run in the background and never delay the browser.
+
 Build and test (needs a JDK, no Burp required for the tests):
 
     ./build.sh test     # runs the offline suite against a fake Burp API + simulated app

@@ -10,6 +10,7 @@ class Settings
     private String scopeOnly;
     private String aggressiveMode;
     private String checkContext;
+    private String proxyListener;
     private IBurpExtenderCallbacks callbacks;
     private ArrayList<Object[]> contentTypes;
     private ArrayList<String> enabledCntentTypes;
@@ -26,6 +27,14 @@ class Settings
         checkContext = callbacks.loadExtensionSetting(CHECK_CONTEXT);
         aggressiveMode = callbacks.loadExtensionSetting(AGGRESSIVE_MODE);
         // aggressive mode sends extra requests, so stay inside the Burp scope unless told otherwise
+        proxyListener = callbacks.loadExtensionSetting(PROXY_LISTENER);
+        if(proxyListener == null) {
+            // Burp Community has no Scanner, so the proxy listener is the only way to get results there
+            String[] version = callbacks.getBurpVersion();
+            boolean community = version != null && version.length > 0 && version[0] != null
+                    && version[0].toLowerCase().contains("community");
+            proxyListener = community ? TRUE_CONST : FALSE_CONST;
+        }
         if(scopeOnly == null)
             scopeOnly = TRUE_CONST;
         if(aggressiveMode == null)
@@ -59,6 +68,15 @@ class Settings
             extractedArray.add(new Object[]{Boolean.valueOf(objects.split(Pattern.quote(DIVIDER_OBJECT))[0]), String.valueOf(objects.split(Pattern.quote(DIVIDER_OBJECT))[1])});
         }
         return extractedArray;
+    }
+
+    public Boolean getProxyListener() {
+        return Boolean.valueOf(proxyListener);
+    }
+
+    public void setProxyListener(boolean proxyListener) {
+        this.proxyListener = String.valueOf(proxyListener);
+        callbacks.saveExtensionSetting(PROXY_LISTENER, this.proxyListener);
     }
 
     public Boolean getAggressiveMode() {

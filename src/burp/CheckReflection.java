@@ -39,7 +39,17 @@ public class CheckReflection {
         this.bodyOffset = response == null ? 0 : helpers.analyzeResponse(response).getBodyOffset();
     }
 
+    // full analysis: find reflected parameters, then probe / analyse their context
     public List<Map> checkResponse() {
+        List<Map> reflectedParameters = detect();
+        if (!reflectedParameters.isEmpty()) {
+            analyzeDeeper(reflectedParameters);
+        }
+        return reflectedParameters;
+    }
+
+    // cheap, passive part only: which parameters appear in the response (no extra requests)
+    public List<Map> detect() {
         List<Map> reflectedParameters = new ArrayList<>();
         byte[] response = iHttpRequestResponse.getResponse();
         byte[] request = iHttpRequestResponse.getRequest();
@@ -56,7 +66,12 @@ public class CheckReflection {
                     parameter.getType(), parameter.getValueStart(), parameter.getValueEnd(), quoted);
         }
         testHeaders(reflectedParameters, response, request);
+        return reflectedParameters;
+    }
 
+    // active part: aggressive probe requests or response-context analysis
+    public void analyzeDeeper(List<Map> reflectedParameters) {
+        byte[] response = iHttpRequestResponse.getResponse();
         if (settings.getAggressiveMode() && !reflectedParameters.isEmpty()) {
             new Aggressive(settings, helpers, iHttpRequestResponse, callbacks, reflectedParameters).scanReflectedParameters();
         } else if (settings.getCheckContext() && !reflectedParameters.isEmpty()) {
@@ -72,7 +87,6 @@ public class CheckReflection {
                 }
             }
         }
-        return reflectedParameters;
     }
 
     private void testValue(List<Map> out, byte[] response, String name, String rawValue, byte type,

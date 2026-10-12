@@ -11,9 +11,9 @@ import java.util.List;
 
 import static burp.Constants.*;
 
-public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
+public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IHttpListener, IExtensionStateListener
 {
-    public static final String PLUGIN_NAME = "Reflector v2";
+    public static final String PLUGIN_NAME = "Reflector v2 beta";
     private IBurpExtenderCallbacks callbacks;
     private IExtensionHelpers helpers;
     private static final String DESCRIPTION_DETAILS = "Reflected parameters in ";
@@ -36,6 +36,15 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
     private JCheckBox aggressiveMode;
     private JCheckBox checkContext;
     private Settings settings;
+    private JCheckBox proxyListener;
+    private JTabbedPane tabs;
+    private volatile ResultsPanel results;
+    private final java.util.concurrent.atomic.AtomicInteger pendingProbes = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "reflector-v2-probe");
+        t.setDaemon(true);
+        return t;
+    });
     
     
     @Override
@@ -49,15 +58,15 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
         // set our extension name
         callbacks.setExtensionName(PLUGIN_NAME);
 
-        // register ourselves as a custom scanner check
-        callbacks.registerScannerCheck(this);
+        // settings do not need the UI, and the listeners below must never see them as null
+        settings = new Settings(callbacks);
+        callbacks.registerExtensionStateListener(this);
 
         SwingUtilities.invokeLater(new Runnable()
         {
             @Override
             public void run()
             {
-                settings = new Settings(callbacks);
                 panel = new JPanel();
                 panel.setLayout(null);
 
@@ -116,11 +125,33 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
                 panel.add(option3);
 
 
+                BurpExtender.OptionPanel optionPanel4 = placeOption(PROXY_LISTENER);
+                JPanel option4 = optionPanel4.getPanel();
+                proxyListener = optionPanel4.getCheckBox();
+                proxyListener.setSelected(settings.getProxyListener());
+                proxyListener.setToolTipText("Analyse Proxy traffic directly and list findings in the Results tab. Needed on Burp Community (no Scanner).");
+                option4.setBounds(58, 103, 140, 20);
+                panel.add(option4);
+
                 initListener();
 
+                results = new ResultsPanel(callbacks);
+                tabs = new JTabbedPane();
+                tabs.addTab("Results", results.component());
+                tabs.addTab("Settings", panel);
 
-                callbacks.customizeUiComponent(panel);
+                callbacks.customizeUiComponent(tabs);
                 callbacks.addSuiteTab(BurpExtender.this);
+
+                // the Scanner only exists in Burp Professional
+                if (!isCommunity()) {
+                    try {
+                        callbacks.registerScannerCheck(BurpExtender.this);
+                    } catch (Throwable t) {
+                        callbacks.printError("Reflector v2: Scanner check unavailable, use the proxy listener: " + t);
+                    }
+                }
+                callbacks.registerHttpListener(BurpExtender.this);
             }
         });
     }
@@ -182,6 +213,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
         });
 
         //checkbox option
+        proxyListener.addItemListener(new ItemListener() {
+            @Override
+            public void itemStateChanged(ItemEvent e) {
+                settings.setProxyListener(proxyListener.isSelected());
+            }
+        });
+
+        //checkbox option
         checkContext.addItemListener(new ItemListener() {
             @Override
             public void itemStateChanged(ItemEvent e) {
@@ -217,7 +256,117 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
     @Override
     public Component getUiComponent()
     {
-        return panel;
+        return tabs;
+    }
+
+    private boolean isCommunity() {
+        String[] version = callbacks.getBurpVersion();
+        return version != null && version.length > 0 && version[0] != null && version[0].toLowerCase().contains("community");
+    }
+
+    @Override
+    public void extensionUnloaded() {
+        executor.shutdownNow();
+    }
+
+    // number of background probe jobs still running (used by the tests)
+    int pendingProbes() {
+        return pendingProbes.get();
+    }
+
+    private boolean contentTypeAllowed(byte[] response) {
+        String contentType = "";
+        for (String header: helpers.analyzeResponse(response).getHeaders()) {
+            if (header.toLowerCase().startsWith("content-type:")) {
+                contentType = header.toLowerCase().split(":", 2)[1].trim();
+                break;
+            }
+        }
+        // browsers sniff a response without a Content-Type, so test it too
+        boolean allowed = contentType.isEmpty();
+        for (String allowedContentType: settings.getEnabledContentTypes()) {
+            if (contentType.contains(allowedContentType)) {
+                allowed = true;
+                break;
+            }
+        }
+        return allowed;
+    }
+
+    private boolean isVulnerable(Map param) {
+        if (!param.containsKey(VULNERABLE)) return false;
+        return !settings.getCheckContext() || String.valueOf(param.get(VULNERABLE)).contains(CONTEXT_VULN_FLAG);
+    }
+
+    private void fill(Finding f, Map param) {
+        f.allowed = Finding.plain(String.valueOf(param.containsKey(VULNERABLE) ? param.get(VULNERABLE) : ""));
+        f.vulnerable = isVulnerable(param);
+        f.pending = false;
+    }
+
+    // turn the analysis result into Results-tab rows
+    private List<Finding> record(IHttpRequestResponse message, List<Map> reflections, boolean pending) {
+        List<Finding> found = new ArrayList<>();
+        URL url = helpers.analyzeRequest(message).getUrl();
+        String method = helpers.analyzeRequest(message).getMethod();
+        for (Map param : reflections) {
+            Finding f = new Finding(method, url.getHost(), url.toString(), String.valueOf(param.get(NAME)),
+                    String.valueOf(param.get(REFLECTED_IN)), ((List) param.get(MATCHES)).size(), message);
+            if (pending) f.pending = true; else fill(f, param);
+            found.add(f);
+            if (results != null) results.add(f);
+        }
+        return found;
+    }
+
+    @Override
+    public void processHttpMessage(int toolFlag, boolean messageIsRequest, IHttpRequestResponse messageInfo) {
+        if (messageIsRequest || toolFlag != IBurpExtenderCallbacks.TOOL_PROXY || !settings.getProxyListener()) {
+            return;
+        }
+        try {
+            byte[] request = messageInfo.getRequest();
+            byte[] response = messageInfo.getResponse();
+            if (request == null || response == null || settings.getEnabledContentTypes() == null) return;
+            if (settings.getScopeOnly() && !callbacks.isInScope(helpers.analyzeRequest(messageInfo).getUrl())) return;
+            if (!contentTypeAllowed(response)) return;
+
+            // work on a copy: Burp may recycle messageInfo once this method returns
+            final IHttpRequestResponse copy = new SimpleRR(request, response, messageInfo.getHttpService());
+            final CheckReflection check = new CheckReflection(settings, helpers, copy, callbacks);
+            final List<Map> reflections = check.detect();
+            if (reflections.isEmpty()) return;
+
+            StringBuilder names = new StringBuilder();
+            for (Map param : reflections) {
+                if (names.length() > 0) names.append(", ");
+                names.append(param.get(NAME));
+            }
+            String old = messageInfo.getComment();
+            messageInfo.setHighlight("orange");
+            messageInfo.setComment((old == null || old.isEmpty() ? "" : old + " | ") + "Reflector v2: " + names);
+
+            // probes send extra requests, so they must not block the browser: do them in the background
+            boolean deep = settings.getAggressiveMode() || settings.getCheckContext();
+            final List<Finding> found = record(copy, reflections, deep);
+            if (deep) {
+                pendingProbes.incrementAndGet();
+                executor.submit(() -> {
+                    try {
+                        check.analyzeDeeper(reflections);
+                        for (int i = 0; i < found.size(); i++) fill(found.get(i), reflections.get(i));
+                    } catch (Throwable t) {
+                        callbacks.printError("Reflector v2: analysis failed: " + t);
+                        for (Finding f : found) f.pending = false;
+                    } finally {
+                        pendingProbes.decrementAndGet();
+                        if (results != null) results.refresh();
+                    }
+                });
+            }
+        } catch (Exception e) {
+            callbacks.printError("Reflector v2: " + e);
+        }
     }
 
 
@@ -281,29 +430,16 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
 
     @Override
     public List<IScanIssue> doPassiveScan(IHttpRequestResponse baseRequestResponse) throws RuntimeException {
+        // in proxy-listener mode the listener does the work, so the Scanner must not repeat it
+        if (settings.getProxyListener())
+            return null;
         if ( this.settings.getScopeOnly() && !callbacks.isInScope(helpers.analyzeRequest(baseRequestResponse).getUrl()) )
             return null;
         if (baseRequestResponse.getResponse() == null || baseRequestResponse.getRequest() == null)
             return null;
-        // check content type
-        String contentType = "";
-        for (String header: helpers.analyzeResponse(baseRequestResponse.getResponse()).getHeaders()) {
-            if (header.toLowerCase().startsWith("content-type:")) {
-                contentType = header.toLowerCase().split(":", 2)[1].trim();
-                break;
-            }
-        }
         if (settings.getEnabledContentTypes() == null)
             return null;
-        // browsers sniff a response without a Content-Type, so test it too
-        boolean isContentTypeAllowed = contentType.isEmpty();
-        for (String allowedContentType: settings.getEnabledContentTypes()) {
-            if (contentType.contains(allowedContentType)) {
-                contentType = allowedContentType;
-                isContentTypeAllowed = true;
-                break;
-            }
-        }
+        boolean isContentTypeAllowed = contentTypeAllowed(baseRequestResponse.getResponse());
         boolean[] vulnerable = {false};
         // start analyze request
         if ( isContentTypeAllowed )
@@ -312,6 +448,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
             List<Map> reflections = new CheckReflection(settings, helpers, baseRequestResponse, callbacks).checkResponse();
             if (!reflections.isEmpty())
             {
+                record(new SimpleRR(baseRequestResponse.getRequest(), baseRequestResponse.getResponse(), baseRequestResponse.getHttpService()), reflections, false);
                 // report the issue
                 String reflectedInBody = "";
                 String reflectedInHeader = "";
