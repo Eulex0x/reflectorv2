@@ -87,5 +87,16 @@ Example:
 * jar.exe cf plugin.jar -C build burp
 
 # Authors
+
+**reflector v2** (Burp Community support via Proxy listener and Results tab, encoded/JSON/header reflection detection, thread-safe severity, scope-only default, offline test suite)
+* Milad Safdari (GitHub: [Eulex0x](https://github.com/Eulex0x))
+
+**Original reflector**
+* Dimitrenko Egor (GitHub: [elkokc](https://github.com/elkokc)), original author
 * Shvetsov Alexandr (GitHub: [shvetsovalex](https://github.com/shvetsovalex))
-* Dimitrenko Egor (GitHub: [elkokc](https://github.com/elkokc))
+
+**Contributors to the original repository** (from its commit history)
+* [shelld3v](https://github.com/shelld3v) (clearer messages, PR #19)
+* [Mike-n1](https://github.com/Mike-n1) (PR #13)
+* sxcurity
+* rsponeev
